@@ -52,6 +52,7 @@ const CREATED_AT: &str = "container_created_at";
 const NAME: &str = "container_name";
 const STREAM: &str = "stream";
 const CONTAINER: &str = "container_id";
+const LOG_DRIVER: &str = "container_driver"
 // Prevent short hostname from being wrongly recognized as a container's short ID.
 const MIN_HOSTNAME_LENGTH: usize = 6;
 
@@ -122,6 +123,12 @@ pub struct DockerLogsConfig {
     ))]
     include_containers: Option<Vec<String>>, // Starts with actually, not include
 
+    /// A list of log drivers to match against.
+    ///
+    /// If not provided, all containers using any log driver are included.
+    #[configurable(metadata(docs::examples = "awslogs", docs::examples = "json-file",))]
+    include_drivers: Option<Vec<String>>,
+
     /// A list of container object labels to match against when filtering running containers.
     ///
     /// Labels should follow the syntax described in the [Docker object labels](https://docs.docker.com/config/labels-custom-metadata/) documentation.
@@ -176,6 +183,7 @@ impl Default for DockerLogsConfig {
             tls: None,
             exclude_containers: None,
             include_containers: None,
+            include_drivers: None,
             include_labels: None,
             include_images: None,
             partial_event_marker_field: default_partial_event_marker_field(),
@@ -307,6 +315,13 @@ impl SourceConfig for DockerLogsConfig {
             )
             .with_source_metadata(
                 Self::NAME,
+                Some(LegacyKey::Overwrite(owned_value_path!(DRIVER))),
+                &owned_value_path!(DRIVER),
+                Kind::bytes(),
+                None,
+            )
+            .with_source_metadata(
+                Self::NAME,
                 Some(LegacyKey::Overwrite(owned_value_path!(CREATED_AT))),
                 &owned_value_path!(CREATED_AT),
                 Kind::timestamp(),
@@ -420,6 +435,10 @@ impl DockerLogsSourceCore {
             filters.insert("label".to_owned(), include_labels.clone());
         }
 
+        if let Some(include_drivers) = &self.config.include_drivers {
+            filters.insert("driver".to_owned(), include_drivers.clone());
+        }
+
         if let Some(include_images) = &self.config.include_images {
             filters.insert("image".to_owned(), include_images.clone());
         }
@@ -514,6 +533,10 @@ impl DockerLogsSource {
         // Apply include filters
         if let Some(include_labels) = &self.esb.core.config.include_labels {
             filters.insert("label".to_owned(), include_labels.clone());
+        }
+
+        if let Some(include_drivers) = &self.config.include_drivers {
+            filters.insert("driver".to_owned(), include_drivers.clone());
         }
 
         if let Some(include_images) = &self.esb.core.config.include_images {
@@ -1099,6 +1122,14 @@ impl ContainerLogInfo {
             path!(NAME),
             self.metadata.name.clone(),
         );
+        // Container driver
+        log_namespace.insert_source_metadata(
+            DockerLogsConfig::NAME,
+            &mut log,
+            Some(LegacyKey::Overwrite(path!(DRIVER))),
+            path!(DRIVER),
+            self.metadata.driver.clone(),
+        );
         // Created at timestamp
         log_namespace.insert_source_metadata(
             DockerLogsConfig::NAME,
@@ -1256,6 +1287,8 @@ struct ContainerMetadata {
     image: Value,
     /// created_at
     created_at: DateTime<Utc>,
+    /// driver -> String
+    driver: Value
 }
 
 impl ContainerMetadata {
@@ -1263,6 +1296,7 @@ impl ContainerMetadata {
         let config = details.config.unwrap();
         let name = details.name.unwrap();
         let created = details.created.unwrap();
+        let driver = details.driver.unwrap();
 
         let labels = config.labels.unwrap_or_default();
 
@@ -1272,6 +1306,7 @@ impl ContainerMetadata {
             name_str: name,
             image: config.image.unwrap().into(),
             created_at: DateTime::parse_from_rfc3339(created.as_str())?.with_timezone(&Utc),
+            driver
         })
     }
 }
